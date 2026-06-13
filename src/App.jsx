@@ -25,6 +25,35 @@ function normalizeResult(data) {
     columns: Array.isArray(data?.columns) ? data.columns : [],
     rows: Array.isArray(data?.rows) ? data.rows : [],
     charts: Array.isArray(data?.charts) ? data.charts : Array.isArray(data?.chart) ? data.chart : data?.chart ? [data.chart] : [],
+    debugTrace: data?.debugTrace || null,
+    queryUsed: data?.queryUsed || '',
+  }
+}
+
+function buildFallbackTrace(result, events, askedQuestion = '') {
+  const effectiveQuestion = result?.queryUsed || askedQuestion || ''
+  return {
+    originalQuestion: askedQuestion || effectiveQuestion,
+    executionQuestion: effectiveQuestion,
+    queryUsed: effectiveQuestion,
+    decisionPath: 'fallback_report',
+    routing: 'fallback_report',
+    queryPlan: {
+      intent_family: 'unknown',
+      operation: 'unknown',
+      measures: [],
+      dimensions: [],
+      filters: [],
+      explanation: result?.summary || 'No explicit debug trace returned by backend.',
+    },
+    questionUnderstanding: {
+      reasoning: result?.summary || 'No explicit debug trace returned by backend.',
+    },
+    dataContext: result?.dataContext || null,
+    searchedSheets: Array.isArray(result?.dataContext?.selectedSources)
+      ? result.dataContext.selectedSources.flatMap((s) => Array.isArray(s?.selectedSheets) ? s.selectedSheets : (s?.selectedSheet ? [s.selectedSheet] : [])).filter(Boolean)
+      : [],
+    events: Array.isArray(events) ? events : [],
   }
 }
 
@@ -45,11 +74,14 @@ function App() {
   const [relationships, setRelationships] = useState([])
   const [selectedRelationshipIds, setSelectedRelationshipIds] = useState([])
 
-  const [question, setQuestion] = useState('How many products are there?')
+  const [question, setQuestion] = useState('')
   const [chartType, setChartType] = useState('all')
   const [chatMessages, setChatMessages] = useState([])
   const [latestResult, setLatestResult] = useState(EMPTY_RESULT)
   const [isQuerying, setIsQuerying] = useState(false)
+  const [queryEvents, setQueryEvents] = useState([])
+  const [isReportOpen, setIsReportOpen] = useState(false)
+  const [lastAskedQuestion, setLastAskedQuestion] = useState('')
 
   const [history, setHistory] = useState([])
   const [historySearch, setHistorySearch] = useState('')
@@ -63,6 +95,7 @@ function App() {
   const inFlightQueryKeyRef = useRef('')
   const hydratedHistoryKeyRef = useRef('')
   const chatScrollRef = useRef(null)
+  const reportRef = useRef(null)
   const uploadResetTimerRef = useRef(null)
 
   const authHeaders = useMemo(() => (token ? { Authorization: `Bearer ${token}` } : {}), [token])
@@ -95,6 +128,126 @@ function App() {
     const el = chatScrollRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
+  }
+
+  const startQueryStream = (askedQuestion) => {
+    const stream = [
+      { label: 'Model is analyzing your question', detail: askedQuestion, status: 'active', at: new Date().toISOString() },
+      { label: 'Model is loading workbook context', detail: 'Reading all sheets and subsheets for selected file(s)', status: 'pending', at: null },
+      { label: 'Model is building execution plan', detail: 'Inferring intent, filters, and output format', status: 'pending', at: null },
+      { label: 'Model is executing query', detail: 'Applying plan, filters, and returning answer + charts', status: 'pending', at: null },
+    ]
+    setQueryEvents(stream)
+  }
+
+  const markQueryStreamDone = (finalLabel, status = 'done') => {
+    setQueryEvents((prev) => {
+      const now = new Date().toISOString()
+      const normalized = prev.map((event) => {
+        if (event.status === 'error') return event
+        return { ...event, status: 'done', at: event.at || now }
+      })
+      return [...normalized, { label: finalLabel, detail: '', status, at: now }]
+    })
+  }
+
+  const buildTraceDrivenEvents = (payload, askedQuestion) => {
+    const trace = payload?.debugTrace || null
+    const plan = trace?.queryPlan || {}
+    const intent = plan?.intent_family || plan?.intentFamily || 'unknown'
+    const decisionPath = trace?.decisionPath || trace?.routing || 'unknown'
+    const executionQuestion = trace?.executionQuestion || askedQuestion
+    const why = trace?.questionUnderstanding?.reasoning || plan?.explanation || payload?.summary || 'No reasoning captured.'
+    const searchedSheets = Array.isArray(trace?.searchedSheets) ? trace.searchedSheets : []
+    const measures = Array.isArray(plan?.measures) ? plan.measures.join(', ') : ''
+    const dimensions = Array.isArray(plan?.dimensions) ? plan.dimensions.join(', ') : ''
+    const filters = Array.isArray(plan?.filters) ? plan.filters.map((f) => `${f?.column || 'field'} ${f?.op || f?.operator || 'contains'} ${f?.value || ''}`.trim()).join(' | ') : ''
+
+    const events = [
+      {
+        label: 'Model thought about your question',
+        detail: `Original: ${askedQuestion}`,
+        status: 'done',
+        at: new Date().toISOString(),
+      },
+      {
+        label: 'Model normalized query for execution',
+        detail: `Execution query: ${executionQuestion}`,
+        status: 'done',
+        at: new Date().toISOString(),
+      },
+      {
+        label: 'Model selected an execution plan',
+        detail: `Intent=${intent}; Measures=${measures || '-'}; Dimensions=${dimensions || '-'}; Filters=${filters || '-'}`,
+        status: 'done',
+        at: new Date().toISOString(),
+      },
+      {
+        label: 'Model executed across workbook context',
+        detail: `Decision path=${decisionPath}; Sheets=${searchedSheets.length ? searchedSheets.join(', ') : 'all available sheets'}`,
+        status: 'done',
+        at: new Date().toISOString(),
+      },
+      {
+        label: 'Model explanation',
+        detail: why,
+        status: 'done',
+        at: new Date().toISOString(),
+      },
+    ]
+    return events
+  }
+
+  const openExecutionReport = () => {
+    setIsReportOpen(true)
+    window.requestAnimationFrame(() => {
+      if (reportRef.current) {
+        reportRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    })
+  }
+
+  const closeExecutionReport = () => {
+    setIsReportOpen(false)
+  }
+
+  const downloadExecutionReport = () => {
+    const trace = latestResult?.debugTrace || buildFallbackTrace(latestResult, queryEvents, lastAskedQuestion)
+    if (!trace) return
+    const reportPayload = {
+      generatedAt: new Date().toISOString(),
+      summary: latestResult?.summary || '',
+      debugTrace: trace,
+      dataContext: latestResult?.dataContext || null,
+      generatedCode: latestResult?.generated_code || null,
+    }
+    const blob = new Blob([JSON.stringify(reportPayload, null, 2)], { type: 'application/json' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `execution-report-${Date.now()}.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(url)
+  }
+
+  const hasReportData = Boolean(latestResult?.debugTrace || latestResult?.summary || latestResult?.dataContext || queryEvents.length)
+  const effectiveTrace = latestResult?.debugTrace || buildFallbackTrace(latestResult, queryEvents, lastAskedQuestion)
+
+  const markQueryStreamError = (message) => {
+    setQueryEvents((prev) => {
+      if (!prev.length) {
+        return [{ label: 'Model failed to complete the query', detail: message, status: 'error', at: new Date().toISOString() }]
+      }
+      const now = new Date().toISOString()
+      const firstActive = prev.findIndex((event) => event.status === 'active')
+      return prev.map((event, idx) => {
+        if (idx < firstActive && event.status !== 'error') return { ...event, status: 'done', at: event.at || now }
+        if (idx === firstActive) return { ...event, status: 'error', detail: message, at: now }
+        return event
+      })
+    })
   }
 
   const loadWorkspaceData = async (userEmail, nextHeaders = authHeaders) => {
@@ -319,32 +472,63 @@ function App() {
     setIsQuerying(true)
     setError('')
     inFlightQueryKeyRef.current = queryKey
+    setLastAskedQuestion(askedQuestion)
+    setLatestResult(EMPTY_RESULT)
+    setIsReportOpen(false)
+    startQueryStream(askedQuestion)
     setChatMessages((prev) => [...prev, { role: 'user', text: askedQuestion, at: new Date().toISOString() }])
 
+    const requestPayload = {
+      email,
+      fileIds: [activeFileId],
+      relationshipIds: selectedRelationshipIds,
+      question: askedQuestion,
+      chartType,
+    }
+
     try {
-      const { data } = await axios.post(`${API_BASE}/query`, {
-        email,
-        fileIds: [activeFileId],
-        relationshipIds: selectedRelationshipIds,
-        question: askedQuestion,
-        sheetName: selectedSheetByFileId[activeFileId] || previewByFileId[activeFileId]?.sheetName || null,
-        chartType,
-      }, { headers: authHeaders })
+      console.info('[QUERY_REQUEST]', requestPayload)
+    } catch {}
+
+    try {
+      const { data } = await axios.post(`${API_BASE}/query`, requestPayload, { headers: authHeaders })
 
       const payload = normalizeResult(data)
       setLatestResult(payload)
+      setIsReportOpen(false)
+      if (payload?.debugTrace) {
+        setQueryEvents(buildTraceDrivenEvents(payload, askedQuestion))
+      } else {
+        markQueryStreamDone('Model completed the answer')
+      }
       rememberHistoryAnswer(askedQuestion, payload)
       setChatMessages((prev) => [...prev, { role: 'assistant', text: payload.summary || 'Analysis complete.', at: new Date().toISOString() }])
+      try {
+        console.info('[QUERY_TRACE]', {
+          question: askedQuestion,
+          summary: payload?.summary,
+          debugTrace: payload?.debugTrace || null,
+        })
+      } catch {}
       await loadWorkspaceData(email)
     } catch (err) {
       const message = parseApiError(err, 'Query execution failed.')
       setError(message)
+      markQueryStreamError(message)
       setChatMessages((prev) => [...prev, { role: 'assistant', text: `Query failed: ${message}`, at: new Date().toISOString() }])
     } finally {
       setLoading(false)
       setIsQuerying(false)
       inFlightQueryKeyRef.current = ''
     }
+  }
+
+  const onWorkspaceQuestionKeyDown = (e) => {
+    if (e.key !== 'Enter') return
+    if (e.shiftKey) return
+    e.preventDefault()
+    if (isQuerying || loading || !activeFileId || !question.trim()) return
+    askQuery()
   }
 
   const saveDashboard = async () => {
@@ -436,6 +620,27 @@ function App() {
   useEffect(() => {
     scrollChatToBottom()
   }, [chatMessages])
+
+  useEffect(() => {
+    if (!isQuerying || !queryEvents.length) return undefined
+
+    const timer = window.setInterval(() => {
+      setQueryEvents((prevEvents) => {
+        if (!prevEvents.length) return prevEvents
+        const firstActive = prevEvents.findIndex((event) => event.status === 'active')
+        const currentActive = firstActive >= 0 ? firstActive : 0
+        const nextActive = Math.min(currentActive + 1, Math.max(0, prevEvents.length - 1))
+        return prevEvents.map((event, idx) => {
+          if (event.status === 'error' || event.status === 'done') return event
+          if (idx < nextActive) return { ...event, status: 'done', at: event.at || new Date().toISOString() }
+          if (idx === nextActive) return { ...event, status: 'active', at: event.at || new Date().toISOString() }
+          return { ...event, status: 'pending', at: event.at }
+        })
+      })
+    }, 1400)
+
+    return () => window.clearInterval(timer)
+  }, [isQuerying, queryEvents.length])
 
   useEffect(() => {
     if (!isPreviewModalOpen) return undefined
@@ -662,7 +867,17 @@ function App() {
                 </select>
               ) : null}
 
-              <textarea className="field textarea" value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask data question..." />
+              <div className="muted">Sheet selection is for preview. Query runs across all sheets/subsheets automatically.</div>
+
+              <textarea
+                className="field textarea workspace-question"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                onKeyDown={onWorkspaceQuestionKeyDown}
+                placeholder="Example: show total donation amount by month"
+              />
+
+              <div className="muted question-input-hint">Press Enter to Run Analysis. Use Shift+Enter for a new line.</div>
 
               <select className="field" value={chartType} onChange={(e) => setChartType(e.target.value)}>
                 {CHART_TYPES.map((type) => <option key={type} value={type}>{type.toUpperCase()}</option>)}
@@ -698,8 +913,42 @@ function App() {
                 )) : <div className="muted">Start with a question.</div>}
               </div>
 
+              {queryEvents.length ? (
+                <section className="event-stream-panel" aria-live="polite">
+                  <div className="event-stream-header">
+                    <h3>Model Event Stream</h3>
+                    <div className="event-stream-actions">
+                      {isQuerying ? (
+                        <div className="thinking-indicator" role="status" aria-label="Model is thinking">
+                          <span className="thinking-dot" />
+                          <span className="thinking-dot" />
+                          <span className="thinking-dot" />
+                        </div>
+                      ) : null}
+                      <button className="btn" onClick={openExecutionReport} disabled={!hasReportData}>Report</button>
+                    </div>
+                  </div>
+
+                  <div className="event-stream-list">
+                    {queryEvents.map((event, idx) => (
+                      <div key={`${event.label}-${idx}`} className={`event-stream-item event-${event.status}`}>
+                        <span className="event-bullet" />
+                        <div className="event-content">
+                          <div className="event-title-row">
+                            <strong>{event.label}</strong>
+                            <small>{event.at ? new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}</small>
+                          </div>
+                          {event.detail ? <div className="event-detail">{event.detail}</div> : null}
+                          {event.status === 'active' && isQuerying ? <div className="event-active-text">In progress...</div> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
               <h3>Result</h3>
-              {latestResult.summary ? <p className="summary">{latestResult.summary}</p> : <p className="muted">No result yet.</p>}
+              {latestResult.summary ? <p className="summary">{latestResult.summary}</p> : <p className="muted">{isQuerying ? 'Processing your question...' : 'No result yet.'}</p>}
 
               {latestResult.rows?.length && latestResult.columns?.length ? (
                 <div className="result-stack">
@@ -719,6 +968,47 @@ function App() {
               </div>
             </article>
           </section>
+        ) : null}
+
+        {isReportOpen && hasReportData ? (
+          <div className="report-modal-overlay" onClick={closeExecutionReport}>
+            <section className="report-modal" onClick={(e) => e.stopPropagation()} ref={reportRef}>
+              <header className="report-modal-header">
+                <div>
+                  <h3>Execution Report</h3>
+                  <p className="muted">Why it was used, what query ran, what data was searched.</p>
+                </div>
+                <div className="event-stream-actions">
+                  <button className="btn" onClick={downloadExecutionReport}>Download Report</button>
+                  <button className="btn" onClick={closeExecutionReport}>Close</button>
+                </div>
+              </header>
+
+              <div className="report-modal-body">
+                <div className="execution-report-box">
+                  <div className="execution-report-line">Original Question: {effectiveTrace?.originalQuestion || lastAskedQuestion || '-'}</div>
+                  <div className="execution-report-line">Execution Question: {effectiveTrace?.executionQuestion || lastAskedQuestion || '-'}</div>
+                  <div className="execution-report-line">Query Used: {latestResult?.queryUsed || effectiveTrace?.queryUsed || effectiveTrace?.executionQuestion || lastAskedQuestion || '-'}</div>
+                  <div className="execution-report-line">Decision Path: {effectiveTrace?.decisionPath || effectiveTrace?.routing || '-'}</div>
+                  <div className="execution-report-line">Intent: {effectiveTrace?.queryPlan?.intent_family || '-'}</div>
+                  <div className="execution-report-line">Operation: {effectiveTrace?.queryPlan?.operation || '-'}</div>
+                  <div className="execution-report-line">Reasoning: {effectiveTrace?.questionUnderstanding?.reasoning || effectiveTrace?.queryPlan?.explanation || latestResult?.summary || '-'}</div>
+                  <div className="execution-report-line">Measures: {Array.isArray(effectiveTrace?.queryPlan?.measures) && effectiveTrace.queryPlan.measures.length ? effectiveTrace.queryPlan.measures.join(', ') : '-'}</div>
+                  <div className="execution-report-line">Dimensions: {Array.isArray(effectiveTrace?.queryPlan?.dimensions) && effectiveTrace.queryPlan.dimensions.length ? effectiveTrace.queryPlan.dimensions.join(', ') : '-'}</div>
+                  <div className="execution-report-line">Filters: {Array.isArray(effectiveTrace?.queryPlan?.filters) && effectiveTrace.queryPlan.filters.length ? effectiveTrace.queryPlan.filters.map((f) => `${f?.column || 'field'} ${f?.op || f?.operator || ''} ${f?.value || ''}`.trim()).join(' | ') : '-'}</div>
+                  <div className="execution-report-line">Data Context: {latestResult?.dataContext?.mode || effectiveTrace?.dataContext?.mode || '-'}</div>
+                  <div className="execution-report-line">Searched Sheets: {Array.isArray(effectiveTrace?.searchedSheets) && effectiveTrace.searchedSheets.length ? effectiveTrace.searchedSheets.join(', ') : (Array.isArray(latestResult?.dataContext?.selectedSources) ? latestResult.dataContext.selectedSources.flatMap((s) => Array.isArray(s?.selectedSheets) ? s.selectedSheets : (s?.selectedSheet ? [s.selectedSheet] : [])).filter(Boolean).join(', ') : '-') || '-'}</div>
+                  <div className="execution-report-line">Generated Code: {latestResult.generated_code || '-'}</div>
+                  {effectiveTrace ? (
+                    <details className="execution-trace-details">
+                      <summary>Full Trace (JSON)</summary>
+                      <pre className="execution-trace-json">{JSON.stringify(effectiveTrace, null, 2)}</pre>
+                    </details>
+                  ) : null}
+                </div>
+              </div>
+            </section>
+          </div>
         ) : null}
 
         {route === 'history' ? (

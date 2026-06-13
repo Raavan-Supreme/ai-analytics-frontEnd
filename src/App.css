@@ -509,6 +509,17 @@ h3 {
   resize: vertical;
 }
 
+.workspace-question::placeholder {
+  color: #9f978a;
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.question-input-hint {
+  margin-top: -2px;
+  font-size: 11px;
+}
+
 .row {
   display: flex;
   align-items: center;
@@ -605,6 +616,162 @@ h3 {
   gap: 6px;
 }
 
+.event-stream-panel {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #faf7f2 0%, #f4eee4 100%);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.event-stream-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.event-stream-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.event-stream-header h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.thinking-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #e9f6f2;
+  border: 1px solid #cae7de;
+}
+
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--green);
+  opacity: 0.25;
+  animation: thinking-pulse 1s ease-in-out infinite;
+}
+
+.thinking-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.thinking-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes thinking-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.event-stream-list {
+  display: grid;
+  gap: 8px;
+}
+
+.event-stream-item {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 8px;
+  align-items: start;
+  border: 1px solid #ddd3c4;
+  border-radius: 10px;
+  background: #fffaf0;
+  padding: 8px;
+}
+
+.event-bullet {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid #ccbfae;
+  background: #e8dece;
+  margin-top: 4px;
+}
+
+.event-done .event-bullet {
+  background: #1f9f72;
+  border-color: #1f9f72;
+}
+
+.event-active {
+  border-color: #90ccb6;
+  box-shadow: 0 0 0 3px rgba(31, 159, 114, 0.12);
+}
+
+.event-active .event-bullet {
+  background: var(--green);
+  border-color: var(--green);
+  animation: event-active-beat 1s ease-in-out infinite;
+}
+
+@keyframes event-active-beat {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.18);
+  }
+}
+
+.event-error {
+  border-color: #edb7b7;
+  background: #fff1f1;
+}
+
+.event-error .event-bullet {
+  background: #d34b4b;
+  border-color: #d34b4b;
+}
+
+.event-content {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.event-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.event-title-row small {
+  color: #756c60;
+  font-size: 11px;
+}
+
+.event-detail {
+  color: #5a5348;
+  font-size: 12px;
+}
+
+.event-active-text {
+  color: var(--green-dark);
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .bubble {
   width: fit-content;
   max-width: 88%;
@@ -632,6 +799,84 @@ h3 {
   border-radius: 10px;
   padding: 8px;
   line-height: 1.5;
+}
+
+.execution-report-box {
+  border: 1px solid #d7d0c2;
+  border-radius: 10px;
+  background: #f8f4ec;
+  padding: 8px 10px;
+  display: grid;
+  gap: 3px;
+}
+
+.report-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 22, 29, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 60;
+  padding: 20px;
+}
+
+.report-modal {
+  width: min(1040px, 95vw);
+  max-height: 88vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(19, 30, 45, 0.24);
+}
+
+.report-modal-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.report-modal-header h3 {
+  margin: 0;
+}
+
+.report-modal-body {
+  padding: 14px;
+}
+
+.execution-report-line {
+  font-size: 12px;
+  color: #554e42;
+}
+
+.execution-trace-details {
+  margin-top: 4px;
+  border-top: 1px dashed #cec3b2;
+  padding-top: 4px;
+}
+
+.execution-trace-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #4c463b;
+  font-weight: 600;
+}
+
+.execution-trace-json {
+  margin: 6px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  background: #f0eade;
+  border: 1px solid #d6ccbc;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .result-stack {
